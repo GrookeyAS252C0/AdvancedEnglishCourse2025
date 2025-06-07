@@ -2,6 +2,8 @@ import streamlit as st
 import json
 import re
 from typing import List, Dict
+import openai
+import os
 
 # ページ設定
 st.set_page_config(
@@ -193,22 +195,141 @@ def parse_pipe_text(content: str) -> List[Dict[str, str]]:
     
     return sentences
 
-def parse_plain_text(content: str) -> List[Dict[str, str]]:
-    """プレーンテキストを解析"""
+def split_text_with_llm(text: str) -> List[str]:
+    """GPT-4o-miniを使用してテキストを適切な文単位に分割"""
+    try:
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            # API Keyがない場合は簡易的な分割を行う
+            return simple_split_sentences(text)
+        
+        client = openai.OpenAI(api_key=api_key)
+        
+        prompt = f"""以下のテキストを、意味のある文単位に正確に分割してください。
+各文は独立して理解できる完全な文になるようにしてください。
+略語（Dr., Mr., etc.）や数字（1.5, 3:00）に注意してください。
+
+テキスト:
+{text}
+
+以下の形式で、分割された文を1行ずつ出力してください：
+1. [最初の文]
+2. [2番目の文]
+3. [3番目の文]
+...以下同様"""
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "あなたは英文を適切に分割する専門家です。"},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            max_tokens=2000
+        )
+        
+        content = response.choices[0].message.content
+        sentences = []
+        
+        # レスポンスから文を抽出
+        lines = content.split('\n')
+        for line in lines:
+            # 番号付きリストから文を抽出
+            match = re.match(r'^\d+\.\s*(.+)$', line.strip())
+            if match:
+                sentence = match.group(1).strip()
+                if sentence:
+                    sentences.append(sentence)
+        
+        return sentences if sentences else simple_split_sentences(text)
+        
+    except Exception as e:
+        st.warning(f"LLMでの文分割に失敗しました。簡易分割を使用します。")
+        return simple_split_sentences(text)
+
+def simple_split_sentences(text: str) -> List[str]:
+    """簡易的な文分割（フォールバック用）"""
+    # 改行で分割
+    lines = text.strip().split('\n')
     sentences = []
-    lines = content.strip().split('\n')
     
     for line in lines:
         line = line.strip()
         if line:
+            # ピリオド、感嘆符、疑問符で分割（ただし略語は除外）
+            # 簡易的な実装
+            parts = re.split(r'(?<=[.!?])\s+(?=[A-Z])', line)
+            sentences.extend([p.strip() for p in parts if p.strip()])
+    
+    return sentences
+
+def parse_plain_text(content: str) -> List[Dict[str, str]]:
+    """プレーンテキストを解析"""
+    sentences = []
+    
+    # LLMを使って文を分割
+    split_sentences = split_text_with_llm(content)
+    
+    for sentence_text in split_sentences:
+        if sentence_text:
             sentence = {
-                'english': line,
+                'english': sentence_text,
                 'japanese': '',
                 'grammar': ''
             }
             sentences.append(sentence)
     
     return sentences
+
+def generate_translation_and_grammar(english_text: str) -> Dict[str, str]:
+    """GPT-4o-miniを使用して日本語訳と文法・語彙ポイントを生成"""
+    try:
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            return {'japanese': '', 'grammar': ''}
+        
+        client = openai.OpenAI(api_key=api_key)
+        
+        prompt = f"""以下の英文について、日本語訳と文法・語彙のポイントを提供してください。
+
+英文: {english_text}
+
+以下の形式で回答してください：
+日本語訳: [自然な日本語訳]
+文法・語彙のポイント: [重要な文法事項、語彙、表現の解説]"""
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "あなたは英語教育の専門家です。"},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=500
+        )
+        
+        content = response.choices[0].message.content
+        
+        # レスポンスを解析
+        japanese = ''
+        grammar = ''
+        
+        lines = content.split('\n')
+        for i, line in enumerate(lines):
+            if line.startswith('日本語訳:'):
+                japanese = line.replace('日本語訳:', '').strip()
+            elif line.startswith('文法・語彙のポイント:'):
+                grammar = line.replace('文法・語彙のポイント:', '').strip()
+                # 複数行にわたる場合の処理
+                for j in range(i+1, len(lines)):
+                    if lines[j].strip() and not lines[j].startswith('日本語訳:'):
+                        grammar += ' ' + lines[j].strip()
+        
+        return {'japanese': japanese, 'grammar': grammar}
+        
+    except Exception as e:
+        st.error(f"GPT-4o-miniでの生成エラー: {str(e)}")
+        return {'japanese': '', 'grammar': ''}
 
 def highlight_grammar_points(text: str) -> str:
     """文法ポイントをハイライト"""
@@ -294,7 +415,7 @@ def display_sentence(index: int, sentence: Dict[str, str]):
 
 # メインアプリ
 def main():
-    st.title("🎓 英語学習アプリ - 文法・語彙解析")
+    st.title("🎓 英語特講2025 - 文法・語彙解析")
     
     # サイドバー
     with st.sidebar:
@@ -309,6 +430,16 @@ def main():
             key="file_uploader"
         )
         
+        # OpenAI API Key入力
+        st.subheader("🔑 OpenAI API設定")
+        api_key = st.text_input(
+            "OpenAI API Key",
+            type="password",
+            help="英文のみの場合、GPT-4o-miniで日本語訳と文法ポイントを自動生成します"
+        )
+        if api_key:
+            os.environ['OPENAI_API_KEY'] = api_key
+        
         if uploaded_file is not None and not st.session_state.file_loaded:
             content = uploaded_file.read().decode('utf-8')
             
@@ -322,6 +453,23 @@ def main():
                 sentences = parse_plain_text(content)
             
             if sentences:
+                # 英文のみの場合はGPT-4o-miniで翻訳と文法ポイントを生成
+                if all(not s['japanese'] and not s['grammar'] for s in sentences):
+                    total = len(sentences)
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    for i, sentence in enumerate(sentences):
+                        if sentence['english'] and not sentence['japanese']:
+                            status_text.text(f"処理中... ({i+1}/{total})")
+                            result = generate_translation_and_grammar(sentence['english'])
+                            sentences[i]['japanese'] = result['japanese']
+                            sentences[i]['grammar'] = result['grammar']
+                            progress_bar.progress((i + 1) / total)
+                    
+                    progress_bar.empty()
+                    status_text.empty()
+                
                 st.session_state.sentences = sentences
                 st.session_state.current_index = 0
                 st.session_state.file_loaded = True
