@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm:*)",
+      "Bash(ls:*)",
+      "Bash(python3:*)",
+      "Bash(grep:*)",
+      "Bash(python:*)",
+      "Bash(source:*)",
+      "Bash(open english_study_app.html)",
+      "Bash(chmod:*)",
+      "mcp__ide__getDiagnostics",
+      "Bash(awk:*)",
+      "Bash(touch:*)",
+      "Bash(streamlit run:*)"
+    ],
+    "deny": []
+  }
+}
